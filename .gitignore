@@ -1,0 +1,14 @@
+# 个人数据与产物：绝不入库
+library/*
+!library/.gitkeep
+config.json
+dist/
+
+# 邮箱/凭证类的临时文件
+*.log
+.env
+
+# 系统与缓存
+__pycache__/
+*.py[cod]
+.DS_Store

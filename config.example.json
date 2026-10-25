@@ -1,0 +1,23 @@
+{
+  "kb_types": [
+    "obsidian"
+  ],
+  "obsidian_vault": "~/Documents/Obsidian/读书灵感",
+  "feishu": {
+    "mode": "lark-cli",
+    "domain": "your-tenant.feishu.cn",
+    "wiki_space_id": "",
+    "wiki_parent_token": "",
+    "wiki_index_doc": ""
+  },
+  "lexiangla": {
+    "mode": "connector",
+    "space_id": "",
+    "space_name": "",
+    "folder_entry_id": "",
+    "folder_name": "读书灵感",
+    "map_entry_id": "",
+    "map_name": "读书灵感目录地图"
+  },
+  "ima": {}
+}
