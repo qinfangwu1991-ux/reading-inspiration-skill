@@ -98,9 +98,22 @@ reading-inspiration/
 │   ├── runtime.md            # 能力矩阵、三环境变量、跨平台六个坑、沙箱实测记录
 │   ├── sources.md            # 抓取路由、退出码、抓取质量五个坑、已知限制
 │   ├── kb-adapters.md        # 四类知识库的接口细节与字段映射
-│   └── design-refs.md        # 设计参考：同类技能的取舍
-└── assets/get-credentials.md # 飞书应用凭证获取（回退路径才需要）
+│   ├── design-refs.md        # 设计参考：同类技能的取舍
+│   └── get-credentials.md    # 飞书应用凭证获取（回退路径才需要）
+└── tools/publish.sh          # 把本机已安装的那份同步回仓库（改完一行命令推送）
 ```
+
+## 分享给别人
+
+三种方式，按对方的技术程度挑：
+
+| 方式 | 对方要做什么 |
+|---|---|
+| **技能页上传** | 下载 [reading-inspiration.zip](https://github.com/qinfangwu1991-ux/reading-inspiration-skill/releases/latest)，在 WorkBuddy 技能页「添加技能 › 上传技能」里导入，零命令行 |
+| **git clone** | `git clone ... ~/.workbuddy/skills/reading-inspiration`，之后 `git pull` 就能更新 |
+| **上架技能市场** | 用 `python3 scripts/setup.py pack --market` 出的 `reading-inspiration-market.zip`，在 [open.workbuddy.cn](https://open.workbuddy.cn/docs/skill) 创建技能时提交；这个包严格按平台结构（SKILL.md + references/ + scripts/），并校验了 frontmatter 八项必填 |
+
+改完技能想同步回仓库：`./tools/publish.sh "改了什么"`（会先跑语法检查 + 上架包校验，再提交推送）。
 
 ## 设计取舍
 
