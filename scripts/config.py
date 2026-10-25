@@ -30,9 +30,16 @@ DEFAULT = {
     "kb_types": [],          # 已启用的知识库列表，可多个，如 ["lexiangla", "obsidian"]
     "obsidian_vault": "",
     "feishu": {"app_id": "", "app_secret": "", "folder_token": "",
-               "wiki_space_id": "", "wiki_parent_token": "", "domain": ""},
+               "wiki_space_id": "", "wiki_parent_token": "", "domain": "",
+               # 链接分享范围：auto=按终态（进知识库不放开）/ tenant / closed / skip
+               "link_share": "auto"},
     "lexiangla": {"team": "", "token": ""},
     "ima": {},
+    # 用户没明确选段时的默认行为
+    #   ask   短文（≤ short_max 段）按整页/整篇记，长文留待选草稿（默认）
+    #   all   一律按整页/整篇记录
+    #   draft 一律保留待选草稿
+    "capture": {"default_when_unclear": "ask", "short_max": 8},
 }
 
 

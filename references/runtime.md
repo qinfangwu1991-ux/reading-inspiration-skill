@@ -25,10 +25,15 @@
 ```bash
 python3 scripts/setup.py env        # 这台机器「有/没有」什么，一屏看完
 python3 scripts/setup.py selftest   # 离线把整条本地链路跑一遍（临时目录，跑完自动清理）
+python3 scripts/setup.py selftest --online   # 额外跑联网抓取与截图降级
 ```
 
+`selftest` 默认**完全不联网**，断言看的是**内容**而不是退出码（同名覆盖、存档截断这类问题
+以前一路绿灯）。飞书那条路用一个会**校验必填参数**的本地桩来跑，覆盖崩溃恢复、同标题不同卡、
+旧卡接纳、重复投递、索引页回读等场景。
+
 - `env` 看能力，**不会**改动任何东西
-- `selftest` 不联网、不碰真实素材库和知识库，6 项全绿说明这台机器能跑通；任一项红会保留临时目录方便排查
+- `selftest` 不联网、不碰真实素材库和知识库，全绿说明这台机器能跑通；任一项红会保留临时目录方便排查
 - 云环境部署完、或用户说「怎么不好使」时，先跑这两条，别猜
 
 ## 三、三个环境变量（只读安装 / 多用户时用）
@@ -69,3 +74,14 @@ export CHROME_PATH=/opt/chromium/chrome
 5. **Windows 控制台是 GBK**：打印中文/emoji 会 `UnicodeEncodeError`，需要时调 `env.setup_stdout()`。
 6. **`sips` 只有 macOS 有**：早期图片归档直接 `subprocess.run(["sips", ...])`，
    在没有 sips 的机器上会抛 `FileNotFoundError` 崩栈 —— 现在四路降级。
+
+## 六、状态文件放哪
+
+| 文件 | 内容 | 是否要备份 |
+|---|---|---|
+| `library/.delivery.json` | 投递台账（每张卡在每个知识库的建成记录） | 要。丢了不会坏数据，但会失去「补发不重建」的依据 |
+| `library/sources/*.md` | 抓到的完整原文存档（含 `source_id` / `content_status`） | 要。删了它，卡片里的 `source_file` 会变成死链 |
+| `library/books/*.md` | 每个来源的 Hub 页（自动重建，可随时重生成） | 不用 |
+
+`library/.delivery.json` 是原子写的（临时文件 + rename），中断不会留下半个 JSON；
+真损坏了会被重命名为 `.delivery.json.broken` 后重建，不会阻断投递。

@@ -41,6 +41,7 @@ from html.parser import HTMLParser
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import env  # noqa: E402
+import naming  # noqa: E402
 LIBRARY = env.library_dir()
 SOURCES = os.path.join(LIBRARY, "sources")
 
@@ -503,13 +504,6 @@ def pdf_text(path):
     return body, len([b for b in body.split("\n\n") if b.strip()])
 
 
-def slugify(s, limit=36):
-    s = norm_ws(s)
-    # 只保留中英文数字，其余（含全角/半角标点）一律变下划线，避免文件名难读
-    s = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", s).strip("_")
-    return (s[:limit] or "untitled")
-
-
 def host_of(url):
     try:
         return (urllib.parse.urlsplit(url).hostname or "").lower()
@@ -554,22 +548,104 @@ def source_name_of(url, title):
     return "链接文档"
 
 
-def save_source(title, source_name, url, body, n_paras, kind):
+def _flat(s):
+    """空白归一，用于内容哈希：换行/空格差异不算「不同内容」。"""
+    return re.sub(r"\s+", "", s or "")
+
+
+def source_identity(url, body):
+    """返回 (source_id, url_hash, content_hash)。
+
+    source_id = 链接哈希 + 内容哈希：
+      · 同一篇重复抓 = 同一个 id → 不重复写
+      · 同一链接内容变了 = 内容哈希变 → 另存一份，旧版本保留
+      · 用户粘贴/本地文件没有 URL → 只按内容哈希去重
+    """
+    content_hash = naming.hash8(_flat(body))
+    url_hash = naming.hash8(url) if url else ""
+    sid = f"{url_hash}-{content_hash}" if url_hash else content_hash
+    return sid, url_hash, content_hash
+
+
+def existing_sources():
+    """扫已有存档，返回 {source_id: 路径}，供去重与版本号使用。"""
+    out = {}
+    if not os.path.isdir(SOURCES):
+        return out
+    for fn in sorted(os.listdir(SOURCES)):
+        if not fn.endswith(".md"):
+            continue
+        p = os.path.join(SOURCES, fn)
+        try:
+            with open(p, encoding="utf-8") as f:
+                head = f.read(2000)
+        except OSError:
+            continue
+        m = re.match(r"^---\n(.*?)\n---", head, re.S)
+        if not m:
+            continue
+        for line in m.group(1).splitlines():
+            k, _, v = line.partition(":")
+            if k.strip() == "source_id":
+                sid = naming.unquote(v).strip()
+                if sid:
+                    out[sid] = p
+                break
+    return out
+
+
+def save_source(title, source_name, url, body, n_paras, kind, content_status="full"):
+    """把抓到的原文**完整**落盘，返回 (路径, 完整字数, 状态, source_id)。
+
+    状态：new 新写入 / duplicate 同一内容已存在（未重复写）
+    文件名同时带**链接哈希与版本/内容哈希**：
+      · 同一天、同标题、不同链接 → 链接哈希不同，不覆盖
+      · 同一天、同链接、内容更新 → 版本号递增，旧版本保留（不是覆盖）
+      · 无链接（粘贴/本地文件）→ 用内容哈希，天然不会撞
+    """
     os.makedirs(SOURCES, exist_ok=True)
+    sid, url_hash, content_hash = source_identity(url, body)
+    chars = len(_flat(body))
+    known = existing_sources()
+    if sid in known:
+        return known[sid], chars, "duplicate", sid
+
+    version = 1
+    if url_hash:
+        # source_id 形如 <url_hash>-<content_hash>，数一下这篇文档已有几个版本
+        version = 1 + len([k for k in known if k.startswith(url_hash + "-")])
+
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    fn = f"{datetime.now():%Y-%m-%d}_{slugify(title or source_name)}.md"
-    path = os.path.join(SOURCES, fn)
-    chars = len(re.sub(r"\s", "", body))
+    head = f"{datetime.now():%Y-%m-%d}_{naming.path_stem(title or source_name)}"
+    if url_hash:
+        # 内容哈希进文件名：同一链接的每次更新都是独立文件，旧版不会被冲掉
+        path = naming.safe_join(SOURCES, f"{head}_{url_hash}-v{version}")
+        # 有上限：万一路径计算退化成同一个值，宁可加内容哈希收尾，也不能死循环
+        for _ in range(200):
+            if not os.path.exists(path):
+                break
+            version += 1
+            path = naming.safe_join(SOURCES, f"{head}_{url_hash}-v{version}")
+        else:
+            path = naming.safe_join(SOURCES, f"{head}_{url_hash}-{content_hash[:8]}")
+    else:
+        path = naming.safe_join(SOURCES, f"{head}_{content_hash[:8]}")
     fm = [
         "---",
-        f"title: {title}",
-        f"source_name: {source_name}",
-        f"url: {url}",
+        f"title: {naming.scalar(title)}",
+        f"source_name: {naming.scalar(source_name)}",
+        f"url: {naming.scalar(url)}",
         f"kind: {kind}",
         f"host: {host_of(url)}",
         f"fetched_at: {stamp}",
         f"chars: {chars}",
         f"paras: {n_paras}",
+        f"source_id: {sid}",
+        f"url_hash: {url_hash}",
+        f"content_hash: {content_hash}",
+        # full = 完整正文已存；summary = 只拿到页面摘要，正文可能在平台侧被截断
+        f"content_status: {content_status}",
+        f"version: {version}",
         "---",
         "",
         f"# {title}",
@@ -582,7 +658,7 @@ def save_source(title, source_name, url, body, n_paras, kind):
     ]
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(fm))
-    return path, chars
+    return path, chars, "new", sid
 
 
 def main():
@@ -595,7 +671,8 @@ def main():
     ap.add_argument("--from-stdin", action="store_true",
                     help="从标准输入读正文（用户直接粘贴了一大段文字时用）")
     ap.add_argument("--url-for-text", default="", help="配合 --from-text 记录原始链接")
-    ap.add_argument("--max-chars", type=int, default=20000, help="正文截断上限，默认 20000")
+    ap.add_argument("--max-chars", type=int, default=20000,
+                    help="终端最多显示多少字（默认 20000）；存档始终是完整原文")
     ap.add_argument("--no-save", action="store_true", help="不写 library/sources，只打正文")
     ap.add_argument("--allow-short", action="store_true", help="正文很短也接受（短文/短文档）")
     ap.add_argument("--json", action="store_true", help="只输出摘要 JSON")
@@ -715,7 +792,7 @@ def main():
         sys.exit(3)
 
     body = (body or "").strip()
-    chars = len(re.sub(r"\s", "", body))
+    chars = len(_flat(body))
     # 只有「从网上抓来的」才可能是登录页；用户自己粘的、本地文件不做这个判断
     if kind in ("link", "feishu") and chars < (40 if a.allow_short else 80):
         why = blocked or ""
@@ -727,23 +804,31 @@ def main():
             print(f"正文太短（{chars} 字），大概率是登录页或需要 JS 渲染。", file=sys.stderr)
             print("→ 让用户直接把正文粘过来，别硬解析。", file=sys.stderr)
         sys.exit(5)
-    if chars > a.max_chars:
-        body = body[:a.max_chars].rstrip() + "\n\n…（正文过长，已截断）"
-        n_paras = len([b for b in body.split("\n\n") if b.strip()])
+    # 打印截断 ≠ 存档截断：存档永远写完整原文，--max-chars 只限制终端里显示多少
+    printed = body
+    print_cut = False
+    if a.max_chars and len(body) > a.max_chars:
+        printed = body[:a.max_chars].rstrip()
+        print_cut = True
 
     title = title or "未命名文档"
     source_name = a.source_name or source_name_of(url, title)
     if a.chapter:
         source_name = source_name  # chapter 只影响卡片，不影响来源名
 
-    saved = ""
+    saved, archived_chars, save_state, source_id = "", 0, "skipped", ""
     if not a.no_save:
-        saved, chars = save_source(title, source_name, url, body, n_paras, kind)
+        saved, archived_chars, save_state, source_id = save_source(
+            title, source_name, url, body, n_paras, kind,
+            "summary" if meta_used else "full")
 
     if a.json:
         print(json.dumps({
             "title": title, "source_name": source_name, "url": url,
             "kind": kind, "chars": chars, "paras": n_paras, "saved": saved,
+            "source_id": source_id, "save_state": save_state,
+            "archived_chars": archived_chars, "printed_chars": len(printed),
+            "content_status": "summary" if meta_used else "full",
         }, ensure_ascii=False, indent=2))
         return
 
@@ -752,23 +837,30 @@ def main():
     if url:
         print(f"链接：{url}")
     if meta_used:
-        print("⚠️ 正文取自页面摘要（og:description）—— 这类站点要登录，正文只出现在摘要里；"
-              "长笔记可能被平台截断，切段前先看结尾是否完整")
+        print("⚠️ 正文取自页面摘要（og:description）—— 这类站点要登录，正文只出现在摘要里，"
+              "存档已标记 content_status: summary")
     print(f"正文：约 {chars} 字 / {n_paras} 个自然段")
+    if print_cut:
+        print(f"⚠️ 终端只显示前 {a.max_chars} 字（完整 {chars} 字已存档，切段请按 1B.1 小节清单来）")
     if saved:
         rel = os.path.relpath(saved, os.path.dirname(LIBRARY))
-        print(f"已存：{rel}")
+        if save_state == "duplicate":
+            print(f"已存过（同一内容，未重复写）：{rel}")
+        else:
+            print(f"已存（完整原文）：{rel}")
         print("卡片 frontmatter（直接粘，只改 paras / date）：")
-        print(f"  book: {source_name}")
-        print(f"  title: {title}")
+        print(f"  book: {naming.scalar(source_name)}")
+        print(f"  title: {naming.scalar(title)}")
         if url:
-            print(f"  url: {url}")
+            print(f"  url: {naming.scalar(url)}")
         print(f"  kind: {'link' if kind in ('link', 'feishu') else 'text'}")
         print(f"  source: {'链接文档' if kind in ('link', 'feishu') else '手动粘贴'}")
         if kind in ("link", "feishu", "file"):
             print(f"  source_file: {rel.replace('library/', '')}")
     print("=" * 50)
-    print(body)
+    print(printed)
+    if print_cut:
+        print(f"\n…（终端显示到此为止，共 {chars} 字；完整原文见存档）")
 
 
 if __name__ == "__main__":

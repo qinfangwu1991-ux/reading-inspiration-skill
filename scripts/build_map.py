@@ -22,6 +22,7 @@ from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import env  # noqa: E402
+import naming  # noqa: E402
 LIBRARY = env.library_dir()
 BOOKS_DIR = os.path.join(LIBRARY, "books")
 MAP_PATH = os.path.join(LIBRARY, "目录地图.md")
@@ -46,7 +47,8 @@ def parse_card(path):
     for line in fm_m.group(1).splitlines():
         if ":" in line:
             k, _, v = line.partition(":")
-            fm[k.strip()] = v.strip().strip('"')
+            # 值可能被引号包着（含 : # [ ] , 的书名必须引号），交给 naming 解析
+            fm[k.strip()] = naming.unquote(v)
     body = fm_m.group(2)
     thought_m = re.search(r"## 当时的想法\n\n?(.*?)(?:\n## |\Z)", body, re.S)
     thought = (thought_m.group(1).strip() if thought_m else "").splitlines()
@@ -86,7 +88,8 @@ def entry_head(e, wikilink=False):
     if is_link(e):
         label = e["title"] or (e["url"] or e["book"])
         if e["url"].startswith("http"):
-            return f"[{label}]({e['url']})"
+            # 标题里可能有 [ ]，不转义会把链接语法拆坏
+            return f"[{naming.md_text(label)}]({e['url']})"
         return label
     return f"第 {e['page']} 页" if e["page"] else ""
 
@@ -132,7 +135,11 @@ def group_by_chapter(entries):
     return out
 
 
-def build_lines(books, cards, wikilink=False):
+def build_lines(books, cards, hub_targets, wikilink=False):
+    """总目录正文。hub_targets：书名 → Hub 的链接目标（已按落盘文件名解析过）。
+
+    链接目标必须用「实际文件名」，不能直接用书名 —— 书名里的 `/`、`..` 会把链接指到库外。
+    """
     n_books = sum(1 for b, es in books.items() if not all(is_link(e) for e in es))
     n_docs = sum(1 for b, es in books.items() if all(is_link(e) for e in es))
     scope = " · ".join(x for x in (
@@ -150,9 +157,11 @@ def build_lines(books, cards, wikilink=False):
         name = f"{book} ({len(entries)})" if link_group else f"《{book}》({len(entries)})"
         lines.append(f"## {name}")
         lines.append("")
-        hub = f"{book} · 灵感总览"
         hub_text = f"{book} · 灵感总览" if link_group else f"《{book}》· 灵感总览"
-        lines.append(f"> 总览：{f'[[{hub}]]' if wikilink else f'[{hub_text}](books/{book}.md)'}")
+        target = hub_targets.get(book) or naming.link_target(naming.path_stem(book))
+        hub_link = (f"[[{target}]]" if wikilink
+                    else f"[{naming.md_text(hub_text)}](books/{target}.md)")
+        lines.append(f"> 总览：{hub_link}")
         lines.append("")
         for e in entries:
             loc = entry_head(e, wikilink=wikilink)
@@ -181,14 +190,20 @@ def build_hub(book, entries, wikilink=False):
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     headline = f"{book} · 灵感总览" if link_group else f"《{book}》· 灵感总览"
     scope = "" if link_group else f" · {len(chapters)} 个章节"
+    # 书名进 frontmatter 一律加引号（含 : # [ ] , 都不会写坏），标签单独做分量清洗
+    tags = naming.yaml_list(["读书", f"读书/{naming.tag_part(book)}"])
     lines = [
         "---",
-        f"book: {book}",
+        # 生成者签名：归属判断靠它，不能只靠 book 字段 —— 用户手写的同主题笔记
+        # 也可能写着 `book: 书名`，只比对 book 就覆盖等于吃掉了人家的正文
+        f"generator: {naming.GENERATOR}",
         "type: book-hub",
+        f"book: {naming.quote(book)}",
+        f"book_key: {naming.quote(naming.hash6(naming.squash(book)))}",
         f"entries: {len(entries)}",
         f"chapters: {len(chapters)}",
         f"updated: {stamp}",
-        f"tags: [读书, 读书/{book}]",
+        f"tags: {tags}",
         "---",
         "",
         f"# {headline}",
@@ -219,11 +234,38 @@ def build_hub(book, entries, wikilink=False):
     return "\n".join(lines) + "\n"
 
 
-def write_hubs(books, out_dir, wikilink=False, name_suffix=""):
-    os.makedirs(out_dir, exist_ok=True)
+def hub_paths(out_dir, books, tail=""):
+    """一次分配全部 Hub 的**完整路径**，返回 ({书: 路径}, {书: 链接目标})。
+
+    必须一次分配全量：`AI/ML` 与 `AI,ML` 清洗后同名，逐本分配时先来的拿干净名字，
+    和「先保存卡片、后构建地图」的分配顺序不一致，回链就会指错 Hub。
+    naming.allocate_paths 按书名排序分配，因此与调用顺序无关。
+
+    链接目标由**实际写下的文件名**反推（去掉 .md），不再拿主干拼第二遍：
+    tail 是「 · 灵感总览」时，冲突检查看的是 `书名 · 灵感总览.md`，
+    若这里只补 `.md` 就成了 `书名.md` —— 检查的和写的不是同一个文件，
+    用户已有的 `书名.md` 会被覆盖。
+    """
+    suffix = f"{tail}.md"
+    paths = naming.allocate_paths(out_dir, list(books), suffix=suffix,
+                                 ident_key="book", accept=naming.hub_owned)
+    targets = {b: naming.link_stem(p) for b, p in paths.items()}
+    return paths, targets
+
+
+def write_hubs(books, paths, wikilink=False):
+    """按「书名 → 落盘路径」写 Hub；路径已由 naming 保证在目标目录内。
+
+    写之前再确认一次「这个位置是我自己的 Hub」：只有文件不存在，或它确实是
+    本工具为这本书生成的（`hub_owned`）才允许覆盖。naming 已经保证了这一点，
+    这里是最后一道闸 —— 名字逻辑以后改坏了，也不会静默吃掉用户的手写笔记。
+    """
     written = []
     for book, entries in books.items():
-        path = os.path.join(out_dir, f"{book}{name_suffix}.md")
+        path = paths[book]
+        if os.path.exists(path) and not naming.hub_owned(path, book):
+            raise RuntimeError(
+                f"拒绝覆盖已有笔记：{path}（不是本工具为《{book}》生成的 Hub）")
         with open(path, "w", encoding="utf-8") as f:
             f.write(build_hub(book, entries, wikilink=wikilink))
         written.append(path)
@@ -248,21 +290,41 @@ def main():
     for c in cards:
         books.setdefault(c["book"], []).append(c)
 
+    # 先解析落盘路径，再据此生成总目录里的链接（链接目标 = 真实文件名）
+    os.makedirs(BOOKS_DIR, exist_ok=True)
+    l_paths, l_targets = hub_paths(BOOKS_DIR, list(books))
+
     with open(MAP_PATH, "w", encoding="utf-8") as f:
-        f.write("\n".join(build_lines(books, cards)))
+        f.write("\n".join(build_lines(books, cards, l_targets)))
     print(f"目录地图已更新: {os.path.abspath(MAP_PATH)}（{len(books)} 个来源 / {len(cards)} 条灵感）")
 
-    hubs = write_hubs(books, BOOKS_DIR)
+    hubs = write_hubs(books, l_paths)
     print(f"来源 Hub 已更新: {len(hubs)} 个（{os.path.abspath(BOOKS_DIR)}）")
 
     if args.vault:
         os.makedirs(args.vault, exist_ok=True)
+        v_paths, v_targets = hub_paths(args.vault, list(books), tail=" · 灵感总览")
         vpath = os.path.join(args.vault, "读书灵感目录地图.md")
         with open(vpath, "w", encoding="utf-8") as f:
-            f.write("\n".join(build_lines(books, cards, wikilink=True)))
+            f.write("\n".join(build_lines(books, cards, v_targets, wikilink=True)))
         print(f"Obsidian 版地图已写入: {vpath}")
-        vhubs = write_hubs(books, args.vault, wikilink=True, name_suffix=" · 灵感总览")
+        vhubs = write_hubs(books, v_paths, wikilink=True)
         print(f"Obsidian 版 Hub 已写入: {len(vhubs)} 个")
+
+        # 上一版把 tail 丢了，写成 `<书名>.md`；本次写的是 `<书名> · 灵感总览.md`。
+        # 旧文件没被覆盖（也没被删），提示一句，让用户自己决定要不要清理。
+        tail_txt = " · 灵感总览"
+        stale = []
+        for p in vhubs:
+            if not p.endswith(tail_txt + ".md"):
+                continue
+            old = p[: -len(tail_txt + ".md")] + ".md"
+            if os.path.exists(old) and naming.read_frontmatter_value(old, "type") == "book-hub":
+                stale.append(old)
+        if stale:
+            print("提示：发现上一版误命名的旧 Hub（内容已写到正确文件名，旧文件保留未删）：")
+            for s in stale:
+                print(f"  · {s}")
 
 
 if __name__ == "__main__":

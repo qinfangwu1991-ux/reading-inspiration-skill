@@ -255,7 +255,13 @@ python3 scripts/fetch_source.py "<链接或文件路径>"
   - 脚本输出里带「⚠️ 正文取自页面摘要」时，**切段前先看结尾是否被截断**，并在收尾如实告诉用户
 - `3` 网络失败 → 重试一次；仍失败按 `5` 处理
 
-抓到的正文会存到 `library/sources/<日期>_<标题>.md`（含 `title / url / source_name / chars / paras` 等 frontmatter）。**这张存档要留着**：卡片只摘几段，原文随时可回查。
+抓到的正文会存到 `library/sources/<日期>_<标题>_<链接哈希>-v<版本>.md`（本地文件/粘贴则用内容哈希），
+frontmatter 含 `title / url / source_name / chars / paras / source_id / content_hash / content_status / version`。
+**这张存档要留着**：卡片只摘几段，原文随时可回查。
+
+- 同一篇重复抓 → 内容哈希相同，直接去重，不新增文件
+- 同一链接内容更新了 → 版本号递增，**旧版原文保留**，不会覆盖
+- 同一标题、不同链接 → 链接哈希不同，各存各的
 
 #### 1B.1 长文档先给「小节清单」，不要一次切几十段
 
@@ -347,7 +353,12 @@ python3 scripts/fetch_source.py --from-stdin --title "<标题>" --source-name "<
 
 - 用户回数字（如「4」）时，**落库前先复述该段正文第一句**（「第 4 段，即『唐玄宗为什么要这么费劲地存私房钱呢……』那段」），让他有机会当场纠正
 - 已经是同一页第二次记录时，清单里对已存段落标「（已存）」，别让用户重复选
-- 用户在问答卡片里跳过/不答 ≠ 没有偏好：按「整页（整篇）记录」处理，并在收尾说明
+- 用户在问答卡片里跳过/不答 ≠ 没有偏好，但**也不能一律当整篇**——长文整篇收录猜错的代价太大。
+  按 `config.json` 的 `capture.default_when_unclear` 处理：
+  - `ask`（默认）：本页/本篇 ≤ `capture.short_max` 段（默认 8 段）→ 按整页（整篇）记录并在收尾说明；
+    超过阈值 → **不落库**，留待选草稿，一句话问「要哪几段」（长文一次就几十上百段，静默全收违背本意）
+  - `all`：一律按整页（整篇）记录（用户明确选过这个偏好）
+  - `draft`：一律保留待选草稿，等用户回话
 
 选择解析规则：
 
@@ -355,7 +366,7 @@ python3 scripts/fetch_source.py --from-stdin --title "<标题>" --source-name "<
 - 粘贴原句：按文字匹配定位到对应段（模糊匹配即可，不必逐字一致）
 - `全部` / `都要` / `随便` / `你定` → 整页/整篇收录，并在收尾反馈里说明「本次按整页（整篇）记录」
 - 用户想要的只是某段里的**半句**时，按他粘贴/指定的句子范围截取，段号记 `2(部分)`，原文摘录里只放这一句
-- 用户回得含糊（如只说「嗯」）→ 不要反复追问，按整页（整篇）记录并在反馈里说明
+- 用户回得含糊（如只说「嗯」）→ 不要反复追问，按上一条的偏好处理（短文记整页并说明；长文留草稿）
 
 **只把选中的段落写进卡片**；没选中的段不落库、不写进「原文摘录」，但段数要记进 frontmatter（`page_paras` / `paras`），方便日后回看「这页（这篇）还有哪几段当时没要」。
 
@@ -443,6 +454,10 @@ source_file: sources/2026-10-25_不懂构建知识体系.md
 - `chapter`：章节名（有就填，Hub 页按它分组）
 - `image`：拍照来源，第 1A.1 步归档脚本最后一行输出的相对路径；归档失败就留空，不要瞎编
 - `title` / `url` / `kind: link` / `source_file`：链接来源必填。`source_file` = `fetch_source.py` 输出的「已存」路径，指向抓下来的全文存档
+- **书名/标题进 frontmatter 一律加引号**：含 `: # [ ] { } , & * ! | >` 或以上述字符开头时必须写
+  `book: "AI: 机器学习"`（内部 `"` 用 `\"` 转义）。拿不准就跑
+  `python3 scripts/naming.py quote "文本"`，把它输出的那一段直接粘进 frontmatter
+- `tags` 里的书名分量要清洗：`python3 scripts/naming.py tag "书名"`（逗号/方括号/冒号会破坏标签含义）
 - 摘录只放选中的段，按原顺序；段号用 `**②**` 打头，读者一眼能看出是从哪段摘的
 - 只摘半句时，`paras` 写 `2(部分)`，摘录里就只放那一句
 
@@ -457,7 +472,10 @@ source_file: sources/2026-10-25_不懂构建知识体系.md
   - 否则（走的是 C2 应用凭证）→ `python3 scripts/save_feishu.py "<卡片md路径>"`，用 markdown 导入任务创建飞书文档（已实测可用，脚本内部已处理好以下三件事，正常情况不需要人工干预）
   - 上传素材必须用 `parent_type=ccm_import_open` + `parent_node=""` + `extra={"obj_type":"docx","file_extension":"md"}`；写成 `import_media` 会返回 `1061002 params error`
   - 上传前剥掉 frontmatter，否则那几行字段会变成文档开头的正文
-  - 文档建好自动把链接权限设成 `tenant_readable`（组织内可读）。应用身份建的文档默认只有应用自己是协作者，不放权用户点链接会提示无权限
+  - 链接权限**按终态决定**，不再无条件放开：只留云空间的文档才设 `tenant_readable`；
+    进知识库的文档由空间成员权限决定，提前放开全租户属于多余暴露。需要改默认行为用
+    `feishu.link_share`（`auto` 默认按终态 / `tenant` 强制组织内可读 / `closed` 仅协作者 / `skip` 不动）
+  - 应用身份建的文档默认只有应用自己是协作者——只留云空间时必须放权，否则用户点链接无权限
   - 应用需开通 `docs:document.media:upload` 与 `drive:drive`，**勾选后必须在「版本管理与发布」创建版本并发布才生效**，否则报 `99991672`
   - 报权限错误时如实告知用户缺哪个权限，**不要**静默降级为忽略这个目标
   - **已接进飞书知识库**（`feishu.wiki_space_id` / `wiki_parent_token` 有值时）：脚本会自动把文档从云空间移进知识库的 `wiki_parent_token` 节点下面，链接变成 `https://<domain>/wiki/<node_token>`。**移入知识库失败时脚本回落到云空间 docx 链接**，那说明授权掉了
@@ -473,9 +491,38 @@ source_file: sources/2026-10-25_不懂构建知识体系.md
   - 返回 `entry.id`，卡片链接为 `https://lexiangla.com/pages/{entry.id}`（工具说明里写的 `mcp.lexiang-app.com` 域名实测 404，不要用）
   - 只有乐享通路不可用、且用户自备 API Token 时，才回退 `python3 scripts/save_lexiangla.py "<卡片md路径>"`
 
-**每个目标成功后，立刻把它的链接/路径写回卡片 frontmatter 对应的 `dest_<kb>` 字段**（`dest_lexiangla` / `dest_feishu` / `dest_obsidian` / `dest_ima`，Edit 追加一行即可；旧卡片里的单个 `dest:` 仍兼容显示为「原件」）。失败的目标**不写该字段留空**，作为下次补发的标记。
+**投递结果由脚本自己记账**，你不用猜有没有建成：
 
-**Obsidian 收尾补刀**：`save_obsidian.py` 是拷贝动作，如果在写 `dest_*` 之前跑，vault 里那份副本会缺链接。所以所有目标都写完之后，**再跑一次** `python3 scripts/save_obsidian.py "<卡片md路径>"`，让 vault 里的副本和地图都带上最终链接。
+- 飞书（两条路）与 Obsidian：脚本成功后**自己把链接写回** `dest_feishu` / `dest_obsidian`（同名 key 原地替换，不会追加重复行），并记进 `library/.delivery.json`
+- 乐享 / IMA：脚本管不到远端 id，仍由你在成功后 Edit 补写 `dest_lexiangla` / `dest_ima`
+- **重复投递是安全的**：脚本投递前查台账——已建成直接复用（并补写可能缺失的 `dest_*`），跳过创建
+- **崩溃恢复不会认错卡**：飞书文档末尾带一行 `> 卡片：<卡片文件名>`；上次停在「已决定投但没确认」时，
+  脚本在目标父节点下列同名候选，**逐个回读正文、按完整标识值精确比对**（`card` 不会命中 `card2` 的文档），
+  是才沿用。标题只用来筛候选——同一页的两张摘录卡一级标题可以完全一样，只按标题认领会把第二张卡的内容并进第一张
+- **同名候选有多份时逐份核对，不能只看第一份**：第一条可能是别的卡建的、本卡在后面；
+  只看第一条会误判成「本卡没建过」再建一份。只有**全部候选都读成功且都不是本卡**，才允许新建
+- **列目录要翻完所有页**：只读第一页时，本卡若在第二页就会被判成「不存在」。
+  应用身份翻 `page_token`（看 `has_more`/`next_page_token`），连接器用 `--page-limit 0`（不限页数）。
+  翻到一半失败、或说还有下一页却没给 token，都算「没查成」，不是「确实没有」
+- **核对不成就不投**：列不到目录（缺 `feishu.wiki_space_id`、无权限、网络失败、没翻完页）、
+  **或有一份候选正文读不出来**时，脚本以**退出码 4** 结束并保留待核对状态（读不出来 ≠ 不是本卡）。
+  这时你要做的是「确认配置或去知识库看一眼」，**不要**自行判断成「远端没有」再建一份
+- **升级前的旧卡片不会被重投**：卡片里已有 `dest_feishu` 但没有台账的，脚本按已投递接纳并补建记录
+- 真需要强制重投（比如远端那份被手动删了），两条路都可以：
+  - `python3 scripts/delivery.py reset "<卡片路径>" --kb feishu` 再跑一次分发
+    （不给 `--parent` 就清这个目标下**全部落点**的记录）
+  - 或直接 `save_feishu.py / save_feishu_lark.py "<卡片路径>" --force`
+- **重投会带「代次」**：reset / `--force` 会让该卡这一目标的代次 +1，旧文档 id 进
+  `.delivery.json` 的作废清单（`superseded`）。核对时这些旧文档**不参与认领**，
+  所以「重投第一枪失败、第二次重试」也不会把上一代那份捡回来。
+  墓碑（重投要求）只有一次投递**真正成功**才消失——不是一开始投就清掉。
+- **台账只认当前代次**：`--force` 创建完、还没写台账就崩了时，下次重跑不会再把
+  上一代的旧链接当结果返回（旧记录已降级为 intent + 作废清单）
+- 排查用：`python3 scripts/delivery.py pending` 看上次没确认的投递，`... show "<卡片路径>"` 看这张卡在各目标的记录
+
+**Obsidian 收尾补刀**：`save_obsidian.py` 现在会自己写 `dest_obsidian` 并登记台账，但它生成的是**拷贝**：
+如果你在飞书/乐享落地之前跑，vault 里那份副本拿不到后来的链接。所以多目标分发时，
+所有目标都写完之后**再跑一次** `python3 scripts/save_obsidian.py "<卡片md路径>"`，让副本和地图带上最终链接。
 
 多目标时，同一条灵感的正文完全相同，只是落到不同地方；不要为此改标题或正文。
 
@@ -498,10 +545,15 @@ library/sources/<日期>_<标题>.md 链接原文存档（链接来源，fetch_s
 
 - `目录地图.md`：按来源分组 → 按时间列出每条灵感（页码或文章标题 + 段号 + **每个知识库各一个链接** + 一句话想法），并在来源下给一行 `> 总览：…`。链接来源的条目直接显示文章标题（点开回原文），分组标题不带书名号
 - `books/<来源名>.md`：一个来源一页，**按 `chapter` 字段自动分组**、章内按页码排序；链接来源没有章节，按时间平铺。每条列「页码/标题 · 段号 — 想法」+ 各知识库链接。来源一多就靠这一层，不要让总目录无限长
-- 若 `kb_types` 里有 obsidian，用 `python3 scripts/build_map.py --vault "<vault目录>"` 再写一份到 vault：本地卡片渲染成 `[[文件名|Obsidian]]` 双链（点一下能跳到卡片），Hub 写成 `<书名> · 灵感总览.md`，卡片末尾自动回链 Hub
+- 若 `kb_types` 里有 obsidian，用 `python3 scripts/build_map.py --vault "<vault目录>"` 再写一份到 vault：本地卡片渲染成 `[[文件名|Obsidian]]` 双链（点一下能跳到卡片），Hub 写成 `<书名> · 灵感总览.md`，卡片末尾自动回链 Hub。**冲突检查、实际写入、回链用的是同一个文件名**
+- **Hub 只覆盖自己生成的文件**：识别靠 frontmatter 的生成者签名（`generator: reading-inspiration` + `type: book-hub` + 书名一致）。vault 里的手写笔记——**哪怕也写了 `book: 书名`**——一律不被当成 Hub：脚本让位到带短哈希的文件名（`书名_<hash> · 灵感总览.md`，再撞就 `_2`），并在写前再校验一次。旧版留下的 Hub 没有签名，按结构识别后**就地迁移**（补上签名，文件名不变）
 - 其余目标地图保留在本地镜像，用户要看时展示
 - **飞书知识库里的索引页**（`feishu.wiki_index_doc` 有值时）：每次落库后刷新，命令
-  `python3 scripts/setup_feishu_wiki.py index`（会自动读 `wiki_index_doc`）。它用块替换重写整页正文，
+  `python3 scripts/setup_feishu_wiki.py index`（会自动读 `wiki_index_doc`）。
+  两种身份都支持：`mode=lark-cli` 用用户身份整页重写（`docs +update --command overwrite`），
+  应用凭证模式用块替换；两边**共用同一份内容**（`index_markdown()`，去掉 H1 与 `> 总览：` 这类本地死链行）。
+  写完会回读一次，**按写入前记录的链接清单逐项核对**：链接丢了会说「n/m 个链接找不到」，
+  回读失败会说「未验证」——这两种都不是成功，别当成已经好了。它用块替换重写整页正文，
   把 `**粗体**` 和 `[文字](链接)` 都转成飞书富文本。⚠️ 飞书超链接必须写成
   `text_run.text_element_style.link.url` 且 **url 要 URL 编码**，写成 `text_run.link.url` 会被静默丢弃（不报错、只是没链接）
 - 乐享模式下文件夹里有一页《读书灵感目录地图》（`lexiangla.map_entry_id`）：它是文件夹索引，**每次落库后都要同步** —— 用 `block_update_page` 的 `command=replace_content` + `new_str`（`content_format=markdown`，`entry_id` = `map_entry_id`）整页覆盖（注意：只传 `replace_content: true` 会报 `command is required`）。内容 = 固定头部（一句说明）+ `## 怎么用` 那五步 + `## 已收录`；「已收录」下面贴本地地图正文，但要把书名那行降一级成 `### 《书名》`，否则和 `## 已收录` 同级、结构会乱
@@ -519,7 +571,9 @@ library/sources/<日期>_<标题>.md 链接原文存档（链接来源，fetch_s
 
 - 图片无法识别 → 让用户重拍（光线充足、文字占画面主体）
 - **链接抓不到正文**（`fetch_source.py` 退出码 5：要登录、靠 JS 渲染、付费墙）→ 一句话请用户把正文粘过来，不要反复换抓取方式硬试；粘贴后按 1C 继续，正文一样能存档
-- **链接文档太长被截断**（默认 20000 字）→ 明确告诉用户只处理了前 20000 字；要么让他指定章节（`--max-chars` 调大重抓），要么按 1B.1 只记他选的那一节
+- **链接文档太长** → 存档永远是完整原文（抓到的全文都写进 `library/sources/`），`--max-chars`
+  只限制终端显示多少字。终端看到「只显示前 N 字」时，按 1B.1 先给小节清单，不要拿截断的尾部当全文；
+  需要看末尾就用 `sed -n` 或直接读存档文件
 - 乐享页面链接 → 脚本一定返回 4，走 MCP `block_fetch_page` 取正文，不要试图用 curl 抓（拿不到）
 - **某个目标分发失败 → 其他目标照常跑完**，本地镜像保留，告知用户是哪个知识库失败、原因是什么，不删除、不暂停；该卡片缺的那个 `dest_<kb>` 字段就是待补发的标记，下次触发本技能时先补发再继续
 - 所有目标都失败 → 只落本地镜像，明确告诉用户这次的卡片只在本地，等他处理完凭证后可以一句话补发
@@ -534,4 +588,6 @@ library/sources/<日期>_<标题>.md 链接原文存档（链接来源，fetch_s
 - `references/kb-adapters.md`：四类知识库的接口细节与字段映射
 - `references/sources.md`：链接来源的抓取路由、退出码、抓取质量五个坑与已知限制
 - `scripts/fetch_source.py`：链接/文件 → 干净正文（公众号、网页、飞书文档、docx、pdf、粘贴），自带 `--from-stdin` / `--from-text` / `--json`
+- `scripts/naming.py`：文件名 / YAML / 标签 / 双链的编码规则，写 frontmatter 拿不准时用它出结果
+- `scripts/delivery.py`：投递台账（三层 ID：source / card / delivery），补发前查它
 - `references/design-refs.md`：同类技能（book-capture / obsidian-skills / 微信读书 / book-to-skill）调研结论，含「借鉴了什么、为什么没照搬」

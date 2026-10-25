@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -218,13 +219,103 @@ def cmd_move(token, space_id, node_token, parent_token):
     print(f"当前父节点：{node.get('parent_node_token') or '(根目录)'}")
 
 
+def index_markdown():
+    """索引页正文（Markdown 版）。两种身份共用同一份内容，避免两套渲染跑偏。
+
+    去掉 H1（索引页标题另有位置），去掉 `> 总览：` 行（本地相对路径在远端是死链）。
+    """
+    path = os.path.join(LIBRARY, "目录地图.md")
+    if not os.path.exists(path):
+        sys.exit("还没有目录地图，先跑 build_map.py")
+    out = []
+    for raw in open(path, encoding="utf-8").read().splitlines():
+        line = raw.rstrip()
+        if not line or line.startswith("# "):
+            continue
+        if line.startswith("> 总览："):
+            continue
+        out.append(line)
+    return "\n".join(out).strip() + "\n"
+
+
+def lark_cli(*args, stdin=None):
+    """跑 lark-cli（用户身份），返回 (json, 进程)。"""
+    exe = shutil.which("lark-cli")
+    if not exe:
+        sys.exit("没找到 lark-cli（飞书连接器未安装），连接器模式无法刷新索引页")
+    p = subprocess.run([exe] + list(args), capture_output=True, text=True,
+                       input=stdin, timeout=180)
+    try:
+        return json.loads((p.stdout or "").strip()), p
+    except Exception:
+        return None, p
+
+
+def expected_links(md):
+    """写入前就记下「应该有哪几个链接」，回读时按这份清单逐项核对。
+
+    只检查内容里有没有 `href` / `"link"` 说明不了问题：链接全被丢掉、
+    或者只剩纯文字时，这些字符串可能压根不出现，也可能以别的形式出现。
+    """
+    out = []
+    for m in re.finditer(r"\]\((https?://[^)\s]+)\)", md):
+        u = m.group(1)
+        if u not in out:
+            out.append(u)
+    return out
+
+
+def verify_links(doc_id, md):
+    """回读索引页，确认每个预期链接都还在。读不出来就明说「未验证」。"""
+    want = expected_links(md)
+    if not want:
+        return
+    back, p = lark_cli("docs", "+fetch", "--doc", doc_id, "--as", "user",
+                       "--doc-format", "markdown", "--format", "json")
+    if not back or not back.get("ok"):
+        msg = (p.stderr or p.stdout or "").strip()[:200]
+        print(f"⚠️ 回读失败，链接是否可点**未验证**：{msg}", file=sys.stderr)
+        return
+    content = ((back.get("data") or {}).get("document") or {}).get("content") or ""
+    if not content:
+        print("⚠️ 回读返回空正文，链接是否可点**未验证**", file=sys.stderr)
+        return
+    missing = [u for u in want
+               if u not in content and urllib.parse.quote(u, safe="") not in content]
+    if missing:
+        print(f"⚠️ 回读：{len(missing)}/{len(want)} 个链接在文档里找不到"
+              f"（例：{missing[0]}）。文字已刷新，但这些链接可能不可点。",
+              file=sys.stderr)
+    else:
+        print(f"回读确认：{len(want)} 个链接都在文档内容里")
+
+
+def cmd_index_lark(doc_id):
+    """连接器（用户身份）刷新索引页。
+
+    以前这条分支不存在：命令都要求 App ID/Secret，而连接器安装时又会写入
+    `wiki_index_doc`，SKILL 又规定该字段有值就每次刷新 —— 于是连接器模式每次落库后
+    必然失败一次。这里用 `docs +update --command overwrite` 以用户身份重写整页。
+    """
+    md = index_markdown()
+    res, p = lark_cli("docs", "+update", "--doc", doc_id,
+                      "--command", "overwrite", "--doc-format", "markdown",
+                      "--content", "-", "--as", "user", "--format", "json",
+                      stdin=md)
+    if not res or not res.get("ok"):
+        msg = (p.stderr or p.stdout or "").strip()[:300]
+        sys.exit(f"刷新索引页失败（连接器身份）：{msg}")
+    print(f"索引页已刷新（连接器身份 · Markdown 重写）：{len(md.splitlines())} 行")
+    verify_links(doc_id, md)
+
+
 def cmd_index(token, doc_id):
     """用本地目录地图整体重写知识库索引页的正文。
 
     索引页是 docx，靠块替换实现：先清空根块的所有子块，再按 Markdown 重建。
     链接会转成飞书文档里的超链接（text_run.link），不是裸 URL 文字。
     """
-    md = open(os.path.join(LIBRARY, "目录地图.md"), encoding="utf-8").read()
+    md = index_markdown()  # 与连接器身份共用同一份内容：去掉 H1 与本地相对链接
     blocks = []
     for raw in md.splitlines():
         line = raw.rstrip()
@@ -299,8 +390,21 @@ def main():
 
     cfg = cfg_raw()
     fc = cfg.get("feishu") or {}
+    mode = (fc.get("mode") or "").strip()
+
+    if mode == "lark-cli":
+        # 连接器模式没有任何应用凭据，索引页只能用用户身份刷新
+        if a.cmd != "index":
+            sys.exit(f"连接器模式下不支持 {a.cmd}（它需要应用凭证）；索引页请用 index")
+        doc = a.doc or fc.get("wiki_index_doc") or ""
+        if not doc:
+            sys.exit("配置里没有 feishu.wiki_index_doc，也没有 --doc；"
+                     "先确认安装时索引页是否建成")
+        cmd_index_lark(doc)
+        return
+
     if not fc.get("app_id") or not fc.get("app_secret"):
-        sys.exit("缺少飞书凭证，先用 config.py set --kb feishu 配好")
+        sys.exit("缺少飞书凭证，先用 config.py set --kb feishu 配好（或改走连接器模式）")
     token = token_of(fc)
 
     if a.cmd == "list":
