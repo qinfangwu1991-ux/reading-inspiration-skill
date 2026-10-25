@@ -1,6 +1,20 @@
 ---
 name: reading-inspiration
+display_name: 读书灵感捕捉
+display_name_en: Reading Inspiration Capture
 description: 读书灵感捕捉：用户拍一页书稿（图片）、发一个文章/文档链接、或直接粘一段文字，自动取到原文并按自然段切分，由用户挑要记录的段落（说段号 / 粘贴原句 / 图上划线，或整篇收录），再记录当时想法，保存到知识库——可同时分发到多个（IMA / 乐享 / 飞书 / 本地 Obsidian），并维护一份"读书灵感目录地图"。触发词：拍照识别、书稿、这个链接、复制链接、文章链接、公众号文章、识别文字、读书笔记、读书灵感、存到知识库、只记这一段、选段、同时存多个知识库、目录地图。
+description_zh: 拍一页书、发一个文章链接、或粘一段文字，按自然段切好让你挑，只记你选中的那几段，并写下当时的想法；一次分发到乐享、飞书、本地 Obsidian，同时维护一份读书灵感目录地图。
+description_en: Turn a book-page photo, an article link, or pasted text into structured reading inspiration cards. It splits the source into paragraphs, keeps only the passages you pick, records what you thought at that moment, and distributes each card to Lexiang, Feishu and Obsidian while maintaining an index map.
+examples_zh:
+  - "拍一页书稿照片发我，我记第 4 段，想法是「皇帝也得筹钱」"
+  - "这个链接你帮我抓一下正文，全部收录，想法：大家都不容易"
+  - "把刚才那条灵感补发到飞书知识库"
+examples_en:
+  - "Here is a photo of page 113 — capture paragraph 4 with the note 'even emperors must raise money'"
+  - "Fetch the body text of this link, keep all paragraphs, note: everyone has it hard"
+  - "Resend that card to the Feishu wiki"
+version: 1.0.0
+author: qinfangwu1991-ux
 ---
 
 # 读书灵感捕捉（Reading Inspiration Capture）
@@ -132,7 +146,7 @@ python3 scripts/save_feishu_lark.py "<卡片md路径>"
 3. 「权限管理」里勾选 `drive:drive` 与 `docs:document.media:upload`
    → 再到「版本管理与发布」创建版本并**发布**（不发布权限不生效）
 
-（给用户看的成稿话术见 `assets/get-credentials.md`，里面也列了「这些都不用你做」的清单，能显著降低用户的心理负担）
+（给用户看的成稿话术见 `references/get-credentials.md`，里面也列了「这些都不用你做」的清单，能显著降低用户的心理负担）
 
 拿到两段字符后一条命令搞定，**脚本内部已自动**：验证凭证 → 取租户域名 → 找/建自己的「读书灵感」文件夹 → 写入落库位置并启用。
 

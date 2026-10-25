@@ -556,7 +556,30 @@ def install_feishu(cfg, a):
     print("已启用：飞书" + ("（含知识库）" if cfg["feishu"].get("wiki_parent_token") else "（云空间文件夹）"))
 
 
-def cmd_pack():
+MARKET_FIELDS = ["name", "display_name", "display_name_en", "description",
+                 "description_zh", "description_en", "version", "author"]
+MARKET_DIRS = ["references", "scripts", "templates"]
+
+
+def check_frontmatter():
+    """检查 SKILL.md 的 frontmatter 是否满足 WorkBuddy 开放平台的上架要求。
+
+    必填八项缺一项，开放平台解析就会失败（报错只说「解析失败」，不给具体字段）。
+    """
+    p = os.path.join(ROOT, "SKILL.md")
+    s = open(p, encoding="utf-8").read()
+    m = re.match(r"^---\n(.*?)\n---\n", s, re.S)
+    if not m:
+        return ["SKILL.md 开头没有 YAML frontmatter"]
+    keys = set()
+    for line in m.group(1).splitlines():
+        if re.match(r"^[A-Za-z_-]+:", line):
+            keys.add(line.split(":", 1)[0].strip())
+    missing = [k for k in MARKET_FIELDS if k not in keys]
+    return ["缺字段 %s" % k for k in missing]
+
+
+def cmd_pack(market=False):
     dist = os.path.join(ROOT, "dist")
     os.makedirs(dist, exist_ok=True)
     name = "reading-inspiration"
@@ -564,6 +587,32 @@ def cmd_pack():
     shutil.rmtree(tmp, ignore_errors=True)
     dst = os.path.join(tmp, name)
     os.makedirs(dst)
+
+    if market:
+        # 上架包：严格按开放平台的结构，只留 SKILL.md + references/ + scripts/ + templates/
+        # 不带 README/LICENSE/library/config/dist —— 那些是给 git 仓库看的，不是给解析器看的
+        bad = check_frontmatter()
+        if bad:
+            print("✗ frontmatter 不满足上架要求：", file=sys.stderr)
+            for b in bad:
+                print("  - " + b, file=sys.stderr)
+            sys.exit(3)
+        shutil.copy2(os.path.join(ROOT, "SKILL.md"), os.path.join(dst, "SKILL.md"))
+        for d in MARKET_DIRS:
+            src = os.path.join(ROOT, d)
+            if os.path.isdir(src):
+                shutil.copytree(src, os.path.join(dst, d),
+                                ignore=shutil.ignore_patterns("__pycache__", "*.pyc",
+                                                              ".DS_Store"))
+        n = len([f for _, _, fs in os.walk(dst) for f in fs])
+        zip_path = os.path.join(dist, f"{name}-market.zip")
+        shutil.make_archive(zip_path[:-4], "zip", tmp, name)
+        shutil.rmtree(tmp, ignore_errors=True)
+        size = os.path.getsize(zip_path) / 1024
+        print(f"已打包（上架版）：{zip_path}（{size:.0f} KB，{n} 个文件）")
+        print("结构：SKILL.md + references/ + scripts/（无 README、LICENSE、library、config）")
+        print("去 open.workbuddy.cn → 创建技能 → 提交这个 zip")
+        return
 
     skip_dirs = {"dist", "__pycache__", ".git"}
     for root, dirs, files in os.walk(ROOT):
@@ -780,6 +829,9 @@ def main():
     ap.add_argument("--folder-entry-name", dest="folder_name_lx")
     ap.add_argument("--map-entry-id")
     ap.add_argument("--map-name", help="目录地图页标题，默认「读书灵感目录地图」")
+    ap.add_argument("--market", action="store_true",
+                    help="pack 时只出上架包（SKILL.md + references/ + scripts/），"
+                         "并校验 open.workbuddy.cn 要求的 frontmatter 八项")
     a = ap.parse_args()
 
     cfg = cfgmod.load()
@@ -793,7 +845,7 @@ def main():
     elif a.cmd == "detect":
         cmd_detect_obsidian()
     elif a.cmd == "pack":
-        cmd_pack()
+        cmd_pack(market=a.market)
     else:
         if a.kb == "obsidian":
             install_obsidian(cfg, a.vault)
